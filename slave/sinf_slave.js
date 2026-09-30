@@ -40,6 +40,15 @@ function allowedSet(slots, buttons) {
     return out.sort(function (a, b) { return a - b; });
 }
 
+// ---- transform stage: transpose after the core, as the Sinfonion's TRANS does -----
+// Results outside 0-127 fold back by octaves so the pitch class survives.
+function transposeNote(note, semitones) {
+    var out = note + (semitones || 0);
+    while (out > 127) out -= 12;
+    while (out < 0) out += 12;
+    return out;
+}
+
 // ---- voice manager: the only stateful stage ------------------------------------
 // send(bytes) is called with [status, data1, data2] for every outgoing note event.
 function Voices(send) {
@@ -49,10 +58,10 @@ function Voices(send) {
     this.policy = "hold";
 }
 
-Voices.prototype.noteOn = function (ch, note, vel, allowed, direction) {
+Voices.prototype.noteOn = function (ch, note, vel, allowed, direction, transpose) {
     var key = (ch << 7) | note;
     if (this.map[key]) this.noteOff(ch, note);            // same input again without a note-off
-    var out = quantize(note, allowed, direction);
+    var out = transposeNote(quantize(note, allowed, direction), transpose);
     this.map[key] = { ch: ch, out: out, vel: vel };
     this._hold(ch, out, vel);
 };
@@ -64,12 +73,12 @@ Voices.prototype.noteOff = function (ch, note, vel) {
     this._release(ch, m.out);
 };
 
-// Harmony changed: hold keeps sounding pitches; retrigger moves notes that are now outside the set.
-Voices.prototype.harmonyChanged = function (allowed, direction) {
+// Harmony or transpose changed: hold keeps sounding pitches; retrigger moves notes whose target changed.
+Voices.prototype.harmonyChanged = function (allowed, direction, transpose) {
     if (this.policy !== "retrigger") return;
     for (var key in this.map) {
         var m = this.map[key], note = key & 0x7F;
-        var out = quantize(note, allowed, direction);
+        var out = transposeNote(quantize(note, allowed, direction), transpose);
         if (out === m.out) continue;
         this._release(m.ch, m.out);
         m.out = out;
@@ -113,6 +122,8 @@ function Slave(send) {
     this.direction = "up";
     this.state = null;      // parsed sinf.state
     this.allowed = [];      // empty = pass through until the master has published
+    this.followTranspose = true;
+    this.transpose = 0;     // semitones applied after quantizing
     this.status = null;
     this.data = [];
     this.sysex = false;
@@ -123,6 +134,7 @@ Slave.prototype.setInstance = function (n) { this.instance = n; this._recompute(
 Slave.prototype.setButton = function (slot, on) { this.buttons[slot] = !!on; this._recompute(); };
 Slave.prototype.setDirection = function (i) { this.direction = DIRECTIONS[i] || "up"; };
 Slave.prototype.setPolicy = function (i) { this.voices.policy = POLICIES[i] || "hold"; };
+Slave.prototype.setFollowTranspose = function (on) { this.followTranspose = !!on; this._recompute(); };
 
 Slave.prototype.inst = function () {
     return this.state && this.state.instances ? this.state.instances[String(this.instance)] : null;
@@ -131,9 +143,11 @@ Slave.prototype.inst = function () {
 Slave.prototype._recompute = function () {
     var inst = this.inst();
     var next = inst ? allowedSet(inst.slots, this.buttons) : [];
-    if (next.join() === this.allowed.join()) return;
+    var nextT = inst && this.followTranspose ? (inst.transpose || 0) : 0;
+    if (next.join() === this.allowed.join() && nextT === this.transpose) return;
     this.allowed = next;
-    this.voices.harmonyChanged(this.allowed, this.direction);
+    this.transpose = nextT;
+    this.voices.harmonyChanged(this.allowed, this.direction, this.transpose);
 };
 
 // Feed one byte from [midiin]. Notes are quantized; everything else passes through unchanged.
@@ -148,7 +162,7 @@ Slave.prototype.byte = function (b) {
     if (this.data.length < ((type === 0xC0 || type === 0xD0) ? 1 : 2)) return;
     var d = this.data; this.data = [];
     var ch = this.status & 0x0F;
-    if (type === 0x90 && d[1] > 0) this.voices.noteOn(ch, d[0], d[1], this.allowed, this.direction);
+    if (type === 0x90 && d[1] > 0) this.voices.noteOn(ch, d[0], d[1], this.allowed, this.direction, this.transpose);
     else if (type === 0x80 || type === 0x90) this.voices.noteOff(ch, d[0], d[1]);
     else this.send([this.status].concat(d));
 };
@@ -160,7 +174,8 @@ Slave.prototype.statusText = function () {
     var names = [];
     for (var i = 0; i < this.allowed.length; i++) names.push(SHARP_NAMES[this.allowed[i]]);
     return "inst " + this.instance + (inst.link ? "" : " (LINK DOWN)") + " | " + SHARP_NAMES[inst.root] + " | " +
-           inst.scaleName + " | allowed " + names.join(" ") + " | " + this.direction + ", " + this.voices.policy;
+           inst.scaleName + " | allowed " + names.join(" ") + " | " + this.direction + ", " + this.voices.policy +
+           " | tr " + (this.followTranspose ? (this.transpose > 0 ? "+" : "") + this.transpose : "off");
 };
 
 // ---- Max glue ------------------------------------------------------------------
@@ -192,10 +207,11 @@ function button(slot, on) { ensureSlave().setButton(slot, on); showStatus(); }
 function instance(n) { ensureSlave().setInstance(n); showStatus(); }
 function direction(i) { ensureSlave().setDirection(i); showStatus(); }
 function policy(i) { ensureSlave().setPolicy(i); showStatus(); }
+function followtranspose(v) { ensureSlave().setFollowTranspose(v); showStatus(); }
 function panic(v) { if (v === undefined || v) ensureSlave().voices.panic(); }
 function bang() { if (inlet === 1) panic(); }
 function hello() { outlet(1, "bang"); }
 
 if (typeof module !== "undefined") {
-    module.exports = { quantize: quantize, allowedSet: allowedSet, Voices: Voices, Slave: Slave, SLOT_NAMES: SLOT_NAMES };
+    module.exports = { quantize: quantize, allowedSet: allowedSet, transposeNote: transposeNote, Voices: Voices, Slave: Slave, SLOT_NAMES: SLOT_NAMES };
 }

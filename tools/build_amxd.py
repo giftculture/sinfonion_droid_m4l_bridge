@@ -211,6 +211,10 @@ def slave_device():
             "panic", [440.0, 190.0, 80.0, 20.0],
             live_param("Panic", "Panic", 2, 0, enum=["off", "on"]),
             outlets=2, outlettype=["", ""], text="Panic", texton="Panic", mode=0)
+    control("obj-trans", "live.text", [520.0, 160.0, 90.0, 18.0], [336.0, 46.0, 110.0, 18.0],
+            "followtranspose", [520.0, 190.0, 120.0, 20.0],
+            live_param("Follow TRANS", "TRANS", 2, 1, enum=["off", "on"]),
+            outlets=2, outlettype=["", ""], text="Follow TRANS", texton="Follow TRANS", mode=1)
 
     p = patcher(boxes, lines, 460.0,
                 "Sinfonion bridge slave: quantizes this track's notes to the Sinfonion's harmony",

@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { scales } = require("../master/scales.json");
 const { Decoder } = require("../master/sinf_decoder.js");
-const { Voices, Slave } = require("../slave/sinf_slave.js");
+const { Voices, Slave, transposeNote } = require("../slave/sinf_slave.js");
 
 const C_MAJOR = [0, 2, 4, 5, 7, 9, 11];
 const recorder = () => { const sent = []; return { sent, send: (b) => sent.push(b) }; };
@@ -66,9 +66,9 @@ test("panic -> note-off for every mapped output, map cleared", () => {
 
 // ---- whole slave: bytes in, bytes out, fed by a real master broadcast ----
 
-function masterState(root, scale) {
+function masterState(root, scale, transpose = 0) {
   const dec = new Decoder(scales);
-  for (const [cc, v] of [[19, 1], [20, root], [21, scale], [22, 64], [23, 64], [24, 64], [25, 127]]) dec.cc(1, cc, v);
+  for (const [cc, v] of [[19, 1], [20, root], [21, scale], [22, 64 + transpose], [23, 64], [24, 64], [25, 127]]) dec.cc(1, cc, v);
   dec.derive();
   return JSON.parse(dec.json());
 }
@@ -120,5 +120,54 @@ test("an instance the master has not published passes notes through", () => {
 test("status line", () => {
   const s = new Slave(() => {});
   s.setState(masterState(2, 6));
-  assert.equal(s.statusText(), "inst 1 | D | D Dorian | allowed C D F A | up, hold");
+  assert.equal(s.statusText(), "inst 1 | D | D Dorian | allowed C D F A | up, hold | tr 0");
+});
+
+// ---- transpose (Sinfonion TRANS, CC 22) ----
+
+test("TRANS shifts the quantized note: E4 -> F4 chord tone, then +2", () => {
+  const r = recorder(); const s = new Slave(r.send);
+  s.setState(masterState(2, 6, 2));
+  for (const b of [0x90, 64, 90, 0x80, 64, 0]) s.byte(b);
+  assert.deepEqual(r.sent, [[0x90, 67, 90], [0x80, 67, 0]]);
+  assert.match(s.statusText(), /tr \+2$/);
+});
+
+test("TRANS -12 (knob fully counter-clockwise) drops an octave", () => {
+  const r = recorder(); const s = new Slave(r.send);
+  s.setState(masterState(2, 6, -12));
+  for (const b of [0x90, 64, 90]) s.byte(b);
+  assert.deepEqual(r.sent, [[0x90, 53, 90]]);
+});
+
+test("Follow TRANS off ignores transpose", () => {
+  const r = recorder(); const s = new Slave(r.send);
+  s.setFollowTranspose(false);
+  s.setState(masterState(2, 6, 5));
+  for (const b of [0x90, 64, 90]) s.byte(b);
+  assert.deepEqual(r.sent, [[0x90, 65, 90]]);
+  assert.match(s.statusText(), /tr off$/);
+});
+
+test("TRANS change while held: hold keeps the note, note-off still hits the sounding pitch", () => {
+  const r = recorder(); const s = new Slave(r.send);
+  s.setState(masterState(2, 6, 0));
+  for (const b of [0x90, 64, 90]) s.byte(b);
+  s.setState(masterState(2, 6, 3));
+  for (const b of [0x80, 64, 0]) s.byte(b);
+  assert.deepEqual(r.sent, [[0x90, 65, 90], [0x80, 65, 0]]);
+});
+
+test("TRANS change while held with retrigger moves the note", () => {
+  const r = recorder(); const s = new Slave(r.send); s.setPolicy(1);
+  s.setState(masterState(2, 6, 0));
+  for (const b of [0x90, 64, 90]) s.byte(b);
+  s.setState(masterState(2, 6, 3));
+  assert.deepEqual(r.sent, [[0x90, 65, 90], [0x80, 65, 0], [0x90, 68, 90]]);
+});
+
+test("transposed notes past 0-127 fold back by an octave", () => {
+  assert.equal(transposeNote(125, 5), 118);
+  assert.equal(transposeNote(3, -12), 3);
+  assert.equal(transposeNote(60, 0), 60);
 });
