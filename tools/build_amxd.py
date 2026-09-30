@@ -116,6 +116,14 @@ def master_device():
         box("obj-rstate", "newobj", [20.0, 220.0, 100.0, 20.0], "receive sinf.state", outlets=1),
         box("obj-view", "dict.view", [20.0, 250.0, 300.0, 150.0], inlets=1, outlets=0,
             present=[298.0, 22.0, 296.0, 144.0]),
+        # Step 9: Live global scale sync
+        box("obj-thisdev", "newobj", [460.0, 20.0, 80.0, 20.0], "live.thisdevice", outlets=3,
+            outlettype=["bang", "int", "int"]),
+        box("obj-ready", "newobj", [460.0, 50.0, 70.0, 20.0], "t liveready", outlets=1),
+        box("obj-sync", "live.text", [560.0, 20.0, 100.0, 18.0], inlets=1, outlets=2, outlettype=["", ""],
+            present=[100.0, 147.0, 110.0, 18.0], text="Sync Live scale", texton="Sync Live scale", mode=1,
+            **live_param("Sync Live scale", "Sync", 2, 1, enum=["off", "on"])),
+        box("obj-sync-prep", "newobj", [560.0, 50.0, 90.0, 20.0], "prepend livesync", inlets=2, outlets=1),
     ]
     lines = [
         line("obj-midiin", 0, "obj-js", 0),
@@ -124,10 +132,15 @@ def master_device():
         line("obj-js", 0, "obj-send", 0),
         line("obj-js", 1, "obj-status", 0),
         line("obj-rstate", 0, "obj-view", 0),
+        line("obj-thisdev", 0, "obj-ready", 0),
+        line("obj-ready", 0, "obj-js", 1),
+        line("obj-sync", 0, "obj-sync-prep", 0),
+        line("obj-sync-prep", 0, "obj-js", 1),
     ]
     p = patcher(boxes, lines, 600.0,
-                "Sinfonion bridge master: decodes DROID CCs 19-25 and broadcasts sinf.state",
-                folder, [("sinf_decoder.js", "TEXT"), ("scales.json", "JSON")])
+                "Sinfonion bridge master: decodes DROID CCs 19-25, broadcasts sinf.state, syncs Live's scale",
+                folder, [("sinf_decoder.js", "TEXT"), ("scales.json", "JSON"), ("live_scales.json", "JSON")],
+                {"obj-sync": ["Sync Live scale", "Sync", 0]})
     write_amxd(folder / "sinf.master.amxd", p)
 
 

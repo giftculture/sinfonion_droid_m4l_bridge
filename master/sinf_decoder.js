@@ -29,6 +29,35 @@ function nameAtRoot(name, root) {
     });
 }
 
+// Pick Live's root_note + scale_name for the seven scale slots (spec step 9).
+// Exact pitch-set match first, preferring the Sinfonion's tonic (slot I) as root, then the other scale notes;
+// otherwise the best Jaccard overlap at or above 0.7; otherwise null (caller keeps the last setting).
+function matchLiveScale(liveScales, slots) {
+    var target = [], k, r, s, i;
+    for (k = 0; k < 7; k++) target[slots[k]] = true;
+    var roots = [];
+    for (k = 0; k < 7; k++) if (roots.indexOf(slots[k]) < 0) roots.push(slots[k]);
+    for (r = 0; r < 12; r++) if (roots.indexOf(r) < 0) roots.push(r);
+
+    var best = null;
+    for (var ri = 0; ri < roots.length; ri++) {
+        r = roots[ri];
+        for (s = 0; s < liveScales.length; s++) {
+            var both = 0, either = 0, have = [];
+            var iv = liveScales[s].intervals;
+            for (i = 0; i < iv.length; i++) have[(r + iv[i]) % 12] = true;
+            for (i = 0; i < 12; i++) {
+                if (have[i] && target[i]) both++;
+                if (have[i] || target[i]) either++;
+            }
+            var score = both / either;
+            if (score === 1) return { root: r, name: liveScales[s].name, exact: true };
+            if (!best || score > best.score) best = { root: r, name: liveScales[s].name, exact: false, score: score };
+        }
+    }
+    return best && best.score >= 0.7 ? { root: best.root, name: best.name, exact: false } : null;
+}
+
 function Decoder(scales) {
     this.scales = scales;
     this.raw = {};        // channel -> field -> last CC value
@@ -147,8 +176,51 @@ function bang() {
 }
 
 function flush() {
-    if (decoder.derive()) { lastUpdate = new Date().toTimeString().slice(0, 8); broadcast(); }
+    if (decoder.derive()) { lastUpdate = new Date().toTimeString().slice(0, 8); broadcast(); syncLive(); }
     showStatus();
+}
+
+// ---- Live global scale sync (spec step 9) ----
+
+var song = null, liveScales = null, syncOn = true, liveStatus = "Live scale: waiting for Live";
+
+function loadJson(file) {
+    var d = new Dict();
+    d.import_json(file);
+    return JSON.parse(d.stringify() || "{}");
+}
+
+function atomText(v) { return v instanceof Array ? v.join(" ") : String(v); }
+
+// From [live.thisdevice]: the Live API is only usable after this.
+function liveready() {
+    if (!ensureDecoder()) return;
+    song = new LiveAPI("live_set");
+    liveScales = loadJson("live_scales.json").scales;
+    if (!liveScales || !liveScales.length) { post("sinf_decoder: live_scales.json not found\n"); liveScales = null; return; }
+    // Check the saved table against the scale Live is set to now.
+    var name = atomText(song.get("scale_name")), iv = atomText(song.get("scale_intervals"));
+    var known = null;
+    for (var s = 0; s < liveScales.length; s++) if (liveScales[s].name === name) known = liveScales[s];
+    if (!known) post("sinf_decoder: Live scale '" + name + "' is not in live_scales.json\n");
+    else if (known.intervals.join(" ") !== iv) post("sinf_decoder: live_scales.json intervals for '" + name + "' differ from Live: " + iv + "\n");
+    syncLive();
+    showStatus();
+}
+
+function livesync(v) { syncOn = !!v; syncLive(); showStatus(); }
+
+function syncLive() {
+    if (!syncOn) { liveStatus = "Live scale: sync off"; return; }
+    if (!song || !liveScales) return;
+    var inst = decoder.instances["1"];
+    if (!inst || !inst.link) return;
+    var m = matchLiveScale(liveScales, inst.slots);
+    if (!m) { liveStatus = "Live scale: no close match, kept"; return; }
+    // Write only what differs: every write is an undo step.
+    if (Number(atomText(song.get("root_note"))) !== m.root) song.set("root_note", m.root);
+    if (atomText(song.get("scale_name")) !== m.name) song.set("scale_name", m.name);
+    liveStatus = "Live scale: " + SHARP_NAMES[m.root] + " " + m.name + (m.exact ? "" : " (nearest)");
 }
 
 function broadcast() {
@@ -158,10 +230,10 @@ function broadcast() {
 }
 
 function showStatus() {
-    var text = decoder.statusLines().join(" / ") + " | changed " + lastUpdate;
+    var text = decoder.statusLines().join(" / ") + " | changed " + lastUpdate + " / " + liveStatus;
     outlet(1, ["set"].concat(text.split(" ")));
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { Decoder: Decoder, slotsFor: slotsFor, nameAtRoot: nameAtRoot, FIELDS: FIELDS };
+    module.exports = { Decoder: Decoder, slotsFor: slotsFor, nameAtRoot: nameAtRoot, matchLiveScale: matchLiveScale, FIELDS: FIELDS };
 }
