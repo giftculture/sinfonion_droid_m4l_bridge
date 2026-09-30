@@ -1,0 +1,6 @@
+{
+  "name": "sinfonion-bridge",
+  "private": true,
+  "description": "Sinfonion -> DROID MASTER18 -> Ableton Live harmonic bridge",
+  "scripts": { "test": "node --test test/*.test.js" }
+}
